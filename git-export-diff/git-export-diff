@@ -1,0 +1,166 @@
+#! /bin/bash
+# 下記を参考に作成
+# https://gist.github.com/hokaccha/3764870
+
+# config
+output_file_list="output_file_list.txt"
+delete_file_list="delete_file_list.txt"
+
+# IFS を改行文字のみとしてこのスクリプトを実行する
+# IFS : シェルの予約変数
+# 区切り文字を変更するときに使う
+IFS=$'\n'
+
+
+### Functions ###
+
+# エラー時、ヘルプ時の処理
+usage_exit() {
+	echo "Usage:"
+	echo "	$ git export-diff <commit> <output_dir>"
+	echo "	$ git export-diff <commit> <commit> <output_dir>"
+	exit 1
+}
+
+# コミットの検証
+isvalid_commit() {
+	# 関数内でのみ有効な変数 commit を宣言
+	local commit
+
+	# 関数 isvalid_commit に渡された引数 (commit1 or commit2) を 変数 commit へ代入
+	commit=$1
+
+	# symbolic-ref の解決ができればそれを返す
+	git symbolic-ref -q $commit > /dev/null 2>&1
+	if [ $? -eq 0 ]
+	then
+		echo $(git symbolic-ref --short $commit)
+		return 0
+	fi
+
+	# rev-parse で解決ができればコミットの指定として正しいので入力された引数を返す
+	git rev-parse --verify $commit > /dev/null 2>&1
+	if [ $? -eq 0 ]
+	then
+		echo $commit
+		return 0
+	fi
+
+	# コミットとして正しくないなら空文字列を返す
+	echo ""
+	return 1
+}
+
+
+### Main ###
+
+# パスの設定
+# zozo working folder
+# 最上位のディレクトリを zozo パスとする
+cd $(git rev-parse --show-toplevel)
+zozopath=$(pwd)
+
+# 引数の数が 2 でも 3 でもない場合は usage を出力して終了
+if [ $# -ne 2 -a $# -ne 3 ]
+then
+	usage_exit
+fi
+
+# 引数の数が 2
+if [ $# -eq 2 ]
+then
+	commit1=$1
+	commit2="HEAD"
+	output_dir=$2
+fi
+
+# 引数の数が 3
+if [ $# -eq 3 ]
+then
+	commit1=$1
+	commit2=$2
+	output_dir=$3
+fi
+
+# commit1 の検証結果を変数 isvalid_commit1 に代入
+isvalid_commit1=$(isvalid_commit $commit1)
+if [ -z $isvalid_commit1 ]
+then
+	echo "$commit1 is invalid commit."
+	usage_exit
+fi
+
+# commit2 の検証結果を変数 isvalid_commit2 に代入
+isvalid_commit2=$(isvalid_commit $commit2)
+if [ -z $isvalid_commit2 ]
+then
+	echo "$commit2 is invalid commit."
+	usage_exit
+fi
+
+# フォルダの存在チェック
+if [ -d "$output_dir" ]
+then
+	echo "$output_dir"
+	echo "フォルダはすでに存在していますが、上書きしますか？[yes/no[default]]"
+	read input
+
+	if ! [ "$input" = 'y' -o "$input" = 'yes' ]
+	then
+		echo "処理を中止して終了します。"
+		exit 1
+	fi
+else
+	echo "$output_dir"
+	echo "フォルダを作成します。"
+	mkdir "$output_dir"
+fi
+
+copycount=0
+
+# 出力ファイルの初期化
+echo -n > "$output_dir/$output_file_list"
+echo -n > "$output_dir/$delete_file_list"
+
+# MEMO:: ファイル名が日本語でも表示できるように
+# git -c core.quotepath=false
+
+# 削除されたファイルの一覧を出力
+git -c core.quotepath=false diff $commit1 $commit2 --name-only --diff-filter=D > "$output_dir/$delete_file_list"
+
+# 削除されたファイルが存在しなければ一覧ファイルを削除
+if [ ! -s $output_dir/$delete_file_list ]
+then
+	rm $output_dir/$delete_file_list
+fi
+
+# 変更されたファイルのコピー開始
+for filename in $(git -c core.quotepath=false diff $commit1 $commit2 --name-only --diff-filter=ACMR)
+do
+	# コピー先パスの作成
+	destination_path="$output_dir/output/$filename"
+
+	# コピー先ディレクトリの作成
+		if [ ! -d "${destination_path%/*}" ] ; then
+			mkdir --parents --verbose "${destination_path%/*}";
+		fi
+
+	# ファイルのコピーを行う
+	cp --preserve --verbose "${zozopath}/$filename" "$destination_path";
+	echo "$filename" >> "$output_dir/$output_file_list"
+
+	copycount=$(expr $copycount + 1);
+done
+
+# コピーファイル数の出力
+echo "$copycount 個のファイルをコピーしました。"
+
+
+# 想定外のファイルがないか確認
+for filename in $(git -c core.quotepath=false diff $commit1 $commit2 --name-only --diff-filter=TUXB)
+do
+	echo "$filename の属性が不明です。ファイルの確認を目視で行なってください"
+	exit 1
+done
+
+
